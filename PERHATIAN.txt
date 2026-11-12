@@ -1,0 +1,9 @@
+SIP-BPD REBUILD GAS 1.1
+
+PENTING:
+1. Gunakan spreadsheet BARU untuk instalasi uji.
+2. Jangan masukkan data riil sebelum uji login, hak akses, tambah, ubah, pencarian, hapus, cetak, ekspor CSV, dan backup berhasil.
+3. Jalankan setupSystem() satu kali, lalu createInitialAdminWizard().
+4. Jalankan systemHealthCheck() dan pastikan ok bernilai true.
+5. Deployment awal disarankan Execute as: Me dan akses Only myself.
+6. Paket ini belum diuji langsung pada akun Google pengguna; lakukan uji operasional sebelum produksi.
