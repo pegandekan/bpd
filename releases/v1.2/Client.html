@@ -1,0 +1,144 @@
+(() => {
+  'use strict';
+  let TOKEN = '', USER = null, BOOKS = [], MODULES = [], ACTIVE = '', ACTIVE_TITLE = '', CURRENT_DATA = null;
+  const $ = id => document.getElementById(id);
+
+  function call(fn, ...args) {
+    return new Promise((resolve, reject) => google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler(e => reject(new Error(e && e.message ? e.message : String(e))))[fn](...args));
+  }
+  function esc(v) {
+    return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function toast(message) {
+    const el = $('toast'); el.textContent = message; el.style.display = 'block';
+    clearTimeout(toast.timer); toast.timer = setTimeout(() => el.style.display = 'none', 3500);
+  }
+  function showError(error) { toast(error && error.message ? error.message : String(error)); }
+
+  $('loginForm').addEventListener('submit', async event => {
+    event.preventDefault(); $('loginButton').disabled = true; $('loginError').textContent = 'Memeriksa akun…';
+    try {
+      const result = await call('login', $('username').value, $('password').value);
+      TOKEN = result.token; USER = result.user;
+      const boot = await call('apiBootstrap', TOKEN);
+      BOOKS = boot.books || []; MODULES = boot.modules || [];
+      $('loginView').classList.add('hidden'); $('appView').classList.remove('hidden');
+      $('userInfo').textContent = USER.nama + ' · ' + USER.role;
+      renderNavigation(); await showDashboard();
+    } catch (error) { $('loginError').textContent = error.message; }
+    finally { $('loginButton').disabled = false; }
+  });
+
+  function navButton(label, action) {
+    const button = document.createElement('button'); button.className = 'nav-link'; button.type = 'button';
+    button.textContent = label; button.addEventListener('click', action); return button;
+  }
+  function renderNavigation() {
+    const bookNav = $('bookNav'), moduleNav = $('moduleNav'); bookNav.replaceChildren(); moduleNav.replaceChildren();
+    BOOKS.forEach(book => bookNav.appendChild(navButton(book.title, () => openModule(book.id, book.title))));
+    const labels = {Aspirasi:'Aspirasi Masyarakat',Rapat:'Rapat & Musyawarah',TindakLanjut:'Tindak Lanjut',Pengawasan:'Pengawasan Desa',Dokumen:'Arsip Dokumen'};
+    MODULES.forEach(module => moduleNav.appendChild(navButton(labels[module.id] || module.title, () => openModule(module.id, labels[module.id] || module.title))));
+  }
+  function setActiveNavigation(label) {
+    document.querySelectorAll('.nav-link').forEach(button => button.classList.toggle('active', button.textContent === label));
+  }
+
+  async function showDashboard() {
+    ACTIVE = ''; CURRENT_DATA = null; setActiveNavigation('Ringkasan');
+    $('mainContent').innerHTML = '<div class="loading">Memuat ringkasan…</div>';
+    try {
+      const data = await call('apiDashboard', TOKEN);
+      const cards = [['Anggota BPD',data.anggota],['Surat Masuk',data.suratMasuk],['Surat Keluar',data.suratKeluar],['Aspirasi',data.aspirasi],['Rapat',data.rapat],['Pengawasan',data.pengawasan]];
+      const bookRows = BOOKS.map(book => `<tr><td>${esc(book.id)}</td><td>${esc(book.title)}</td><td>${data.books && data.books[book.id] != null ? data.books[book.id] : '—'}</td></tr>`).join('');
+      $('mainContent').innerHTML = `
+        <div class="page-head"><div><h1 class="page-title">Dashboard SIP-BPD</h1><p class="muted">Ringkasan administrasi BPD Desa Pegandekan</p></div><button class="secondary" id="printDashboard">Cetak Ringkasan</button></div>
+        <div class="stats">${cards.map(item => `<div class="stat"><span>${esc(item[0])}</span><strong>${item[1] == null ? '—' : item[1]}</strong></div>`).join('')}</div>
+        <section class="panel"><h2 class="section-title">Rekap 15 Buku Administrasi</h2><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama Buku</th><th>Jumlah Data</th></tr></thead><tbody>${bookRows}</tbody></table></div></section>
+        <div class="panel"><strong>Selamat bekerja.</strong><p class="muted">Pilih buku administrasi atau modul kerja melalui navigasi.</p></div>`;
+      $('printDashboard').addEventListener('click', () => window.print());
+    } catch (error) { showError(error); }
+  }
+
+  async function openModule(moduleName, title, searchText) {
+    ACTIVE = moduleName; ACTIVE_TITLE = title || moduleName; setActiveNavigation(ACTIVE_TITLE);
+    $('mainContent').innerHTML = '<div class="loading">Memuat data…</div>';
+    try { renderModule(await call('apiList', TOKEN, moduleName, searchText || '')); }
+    catch (error) { $('mainContent').innerHTML = `<div class="panel error">${esc(error.message)}</div>`; }
+  }
+
+  function renderModule(data) {
+    CURRENT_DATA = data;
+    const headers = data.headers || [], rows = data.rows || [];
+    $('mainContent').innerHTML = `
+      <div class="page-head"><div><h1 class="page-title">${esc(data.title || ACTIVE_TITLE)}</h1><p class="muted"><span id="rowCount">${rows.length}</span> data ditemukan</p></div></div>
+      <div class="toolbar" id="moduleToolbar">
+        <form id="searchForm" class="search-form"><input id="searchInput" type="search" maxlength="120" placeholder="Cari nomor, nama, tanggal, uraian…"><button class="secondary" type="submit">Cari</button><button class="secondary" type="button" id="resetSearch">Reset</button></form>
+        <button class="secondary" type="button" id="printTable">Cetak</button><button class="secondary" type="button" id="exportCsv">Ekspor CSV</button>
+      </div>
+      <div id="editorHost"></div>
+      <div class="table-wrap"><table id="dataTable"><thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join('')}${data.canWrite?'<th class="actions">Kelola</th>':''}</tr></thead>
+      <tbody>${renderRows(rows, data)}</tbody></table></div>`;
+    $('searchInput').value = data.query || '';
+    $('searchForm').addEventListener('submit', event => { event.preventDefault(); openModule(ACTIVE, ACTIVE_TITLE, $('searchInput').value); });
+    $('resetSearch').addEventListener('click', () => openModule(ACTIVE, ACTIVE_TITLE, ''));
+    $('printTable').addEventListener('click', () => window.print());
+    $('exportCsv').addEventListener('click', exportCurrentCsv);
+    if (data.canWrite) {
+      const add = document.createElement('button'); add.type = 'button'; add.textContent = '+ Tambah Data';
+      add.addEventListener('click', () => showEditor(data.fields, headers, null)); $('moduleToolbar').prepend(add);
+      $('mainContent').querySelectorAll('[data-edit]').forEach(button => button.addEventListener('click', () => {
+        const row = rows.find(item => String(item.id) === button.dataset.edit); if (row) showEditor(data.fields, headers, row);
+      }));
+      $('mainContent').querySelectorAll('[data-delete]').forEach(button => button.addEventListener('click', async () => {
+        if (!window.confirm('Yakin ingin menghapus data ini?')) return;
+        try { await call('apiDelete', TOKEN, ACTIVE, button.dataset.delete); toast('Data berhasil dihapus.'); await openModule(ACTIVE, ACTIVE_TITLE); }
+        catch (error) { showError(error); }
+      }));
+    }
+  }
+
+  function renderRows(rows, data) {
+    if (!rows.length) return `<tr><td class="empty" colspan="${(data.headers || []).length + (data.canWrite ? 1 : 0)}">Belum ada data yang cocok.</td></tr>`;
+    return rows.map(row => `<tr>${row.values.map(value=>`<td>${esc(value)}</td>`).join('')}${data.canWrite ? `<td class="actions"><button class="secondary" data-edit="${esc(row.id)}">Ubah</button>${data.canDelete ? `<button class="danger" data-delete="${esc(row.id)}">Hapus</button>` : ''}</td>` : ''}</tr>`).join('');
+  }
+
+  function exportCurrentCsv() {
+    if (!CURRENT_DATA) return;
+    const headers = CURRENT_DATA.headers || [], rows = CURRENT_DATA.rows || [];
+    const quote = value => '"' + String(value == null ? '' : value).replace(/"/g, '""') + '"';
+    const csv = '\ufeff' + [headers].concat(rows.map(row => row.values)).map(row => row.map(quote).join(',')).join('\r\n');
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = url; link.download = (ACTIVE || 'SIP-BPD') + '.csv'; document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function showEditor(fields, headers, row) {
+    const host = $('editorHost'), old = row ? row.values : [], values = {};
+    headers.slice(1).forEach((header,index) => { values[header] = old[index+1] || ''; });
+    host.innerHTML = `<section class="panel editor"><h3>${row ? 'Ubah' : 'Tambah'} ${esc(ACTIVE_TITLE)}</h3>
+      <form id="recordForm"><div class="form-grid">${fields.map((field,index)=>fieldControl(field,index,values[field.label] || '')).join('')}</div>
+      <div class="form-actions"><button type="submit">Simpan</button><button type="button" class="secondary" id="cancelEditor">Batal</button></div></form></section>`;
+    $('cancelEditor').addEventListener('click', () => host.replaceChildren());
+    $('recordForm').addEventListener('submit', async event => {
+      event.preventDefault(); const form = event.currentTarget, payload = {}; if (row) payload.ID = row.id;
+      fields.forEach(field => { const control = form.elements.namedItem('f_' + field.label); payload[field.label] = control ? control.value : ''; });
+      const submit = form.querySelector('[type="submit"]'); submit.disabled = true;
+      try { await call('apiSave', TOKEN, ACTIVE, payload); toast('Data berhasil disimpan.'); await openModule(ACTIVE, ACTIVE_TITLE); }
+      catch (error) { showError(error); submit.disabled = false; }
+    });
+    host.scrollIntoView({behavior:'smooth',block:'start'});
+  }
+
+  function fieldControl(field,index,value) {
+    const label = esc(field.label), name = 'f_' + field.label, type = field.type || 'text'; let control = '';
+    if (type === 'textarea') control = `<textarea name="${esc(name)}" id="field_${index}">${esc(value)}</textarea>`;
+    else if (type === 'select') control = `<select name="${esc(name)}" id="field_${index}"><option value="">Pilih…</option>${(field.options||[]).map(option=>`<option value="${esc(option)}" ${value===option?'selected':''}>${esc(option)}</option>`).join('')}</select>`;
+    else control = `<input type="${['date','number','url'].includes(type)?type:'text'}" name="${esc(name)}" id="field_${index}" value="${esc(value)}" ${type==='number'?'step="any"':''}>`;
+    return `<label>${label}${control}</label>`;
+  }
+
+  $('homeButton').addEventListener('click', showDashboard);
+  $('logoutButton').addEventListener('click', async () => { try { await call('logout', TOKEN); } catch (error) {} TOKEN = ''; window.location.reload(); });
+})();
